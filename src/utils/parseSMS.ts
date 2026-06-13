@@ -71,7 +71,8 @@ function parseCIB(text: string): ParsedSMSTransaction | null {
 // "تم خصم مبلغ 200 جنيه من حسابك"  (Arabic debit)
 // "تم إضافة مبلغ 500 جنيه لحسابك"  (Arabic credit)
 function parseArabicBankSMS(text: string): ParsedSMSTransaction | null {
-  const debitM = text.match(/تم خصم مبلغ\s*([\d,]+\.?\d*)\s*جنيه/u)
+  // Match Arabic debit/credit SMS (no /u flag needed for literal Arabic characters)
+  const debitM = text.match(/تم خصم مبلغ\s*([\d,]+\.?\d*)\s*جنيه/)
   if (debitM) {
     return {
       type: 'debit',
@@ -79,7 +80,7 @@ function parseArabicBankSMS(text: string): ParsedSMSTransaction | null {
       bank: 'Bank', merchant: 'Bank Transfer', rawText: text,
     }
   }
-  const creditM = text.match(/تم إضافة مبلغ\s*([\d,]+\.?\d*)\s*جنيه/u)
+  const creditM = text.match(/تم إضافة مبلغ\s*([\d,]+\.?\d*)\s*جنيه/)
   if (creditM) {
     return {
       type: 'credit',
