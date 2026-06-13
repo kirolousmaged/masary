@@ -36,9 +36,10 @@ export function useSmsListener() {
       try {
         const { SmsPlugin } = await import('@/plugins/SmsPlugin')
 
-        // Request RECEIVE_SMS permission — prompts user if not yet granted
-        await SmsPlugin.requestPermission().catch(() => {})
-
+        // Do NOT call requestPermission() here — Android auto-denies SMS
+        // permissions for non-default SMS apps and shows a scary denial dialog.
+        // The listener still works if the user grants RECEIVE_SMS manually via ADB:
+        //   adb shell pm grant com.masary.app android.permission.RECEIVE_SMS
         const handle = await SmsPlugin.addListener('smsReceived', ({ sender, body }) => {
           if (!isBankSender(sender)) return
           const parsed = parseBankSMS(body)
