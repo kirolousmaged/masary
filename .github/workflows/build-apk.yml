@@ -52,6 +52,7 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
+          NEXT_PUBLIC_GOLDAPI_KEY: ${{ secrets.GOLDAPI_KEY }}
 
       # ── 5. Capacitor ─────────────────────────────────────────────────────
       - name: Add Capacitor Android platform
