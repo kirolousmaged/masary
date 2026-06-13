@@ -13,7 +13,9 @@ export interface GoldHolding {
 export interface StockHolding {
   id: string
   ticker: string
+  name?: string      // populated for manually-added custom stocks
   shares: number
+  avgCost?: number   // purchase price per share in EGP
 }
 
 export interface StockPriceState {
@@ -52,6 +54,7 @@ interface PortfolioStore {
   sellStock: (ticker: string, shares: number) => string | null
   buyGold: (karat: GoldKarat, amount: number) => string | null
   sellGold: (karat: GoldKarat, amount: number) => string | null
+  addManualStock: (ticker: string, name: string, shares: number, purchasePrice: number) => string | null
 
   reset: () => void
 }
@@ -94,16 +97,17 @@ export const usePortfolioStore = create<PortfolioStore>()(
       tickStockPrice: (ticker, newPrice) =>
         set(state => {
           const prev = state.stockPrices[ticker]
-          if (!prev) return state
+          // Create entry on first live price for custom tickers seeded by addManualStock
+          const base = prev ?? { current: newPrice, prev: newPrice, open: newPrice, change: 0, changePct: 0 }
           return {
             stockPrices: {
               ...state.stockPrices,
               [ticker]: {
-                ...prev,
-                prev: prev.current,
+                ...base,
+                prev: base.current,
                 current: newPrice,
-                change: newPrice - prev.open,
-                changePct: ((newPrice - prev.open) / prev.open) * 100,
+                change: newPrice - base.open,
+                changePct: ((newPrice - base.open) / base.open) * 100,
               },
             },
           }
@@ -155,11 +159,16 @@ export const usePortfolioStore = create<PortfolioStore>()(
         if (cost > state.cashBalance) return 'Insufficient cash balance'
 
         const existing = state.stockHoldings.find(h => h.ticker === ticker)
-        const newHoldings = existing
-          ? state.stockHoldings.map(h =>
-              h.ticker === ticker ? { ...h, shares: h.shares + shares } : h
-            )
-          : [...state.stockHoldings, { id: `${ticker}-${Date.now()}`, ticker, shares }]
+        let newHoldings: typeof state.stockHoldings
+        if (existing) {
+          const totalShares = existing.shares + shares
+          const newAvgCost  = parseFloat((((existing.avgCost ?? price) * existing.shares + price * shares) / totalShares).toFixed(4))
+          newHoldings = state.stockHoldings.map(h =>
+            h.ticker === ticker ? { ...h, shares: totalShares, avgCost: newAvgCost } : h
+          )
+        } else {
+          newHoldings = [...state.stockHoldings, { id: `${ticker}-${Date.now()}`, ticker, shares, avgCost: price }]
+        }
 
         const tx: SMSTransaction = {
           id: `tx-${Date.now()}`,
@@ -283,6 +292,55 @@ export const usePortfolioStore = create<PortfolioStore>()(
           cashBalance: parseFloat((state.cashBalance + proceeds).toFixed(2)),
           goldHoldings: newHoldings,
           transactions: [tx, ...state.transactions],
+        })
+        return null
+      },
+
+      addManualStock: (ticker, name, shares, purchasePrice) => {
+        const state = get()
+        ticker = ticker.trim().toUpperCase()
+        if (!ticker) return 'Enter a ticker symbol'
+        if (shares <= 0) return 'Shares must be greater than 0'
+        if (purchasePrice <= 0) return 'Purchase price must be greater than 0'
+        const cost = parseFloat((shares * purchasePrice).toFixed(2))
+        if (cost > state.cashBalance) return 'Insufficient cash balance'
+
+        const existing = state.stockHoldings.find(h => h.ticker === ticker)
+        let newHoldings: typeof state.stockHoldings
+        if (existing) {
+          const totalShares  = existing.shares + shares
+          const newAvgCost   = parseFloat((((existing.avgCost ?? purchasePrice) * existing.shares + purchasePrice * shares) / totalShares).toFixed(4))
+          newHoldings = state.stockHoldings.map(h =>
+            h.ticker === ticker ? { ...h, shares: totalShares, avgCost: newAvgCost } : h
+          )
+        } else {
+          newHoldings = [
+            ...state.stockHoldings,
+            { id: `${ticker}-${Date.now()}`, ticker, name: name.trim() || ticker, shares, avgCost: purchasePrice },
+          ]
+        }
+
+        const tx: SMSTransaction = {
+          id: `tx-${Date.now()}`,
+          type: 'debit',
+          amount: cost,
+          merchant: `Buy ${shares} × ${ticker}`,
+          bank: 'Manual Entry',
+          date: new Date().toISOString(),
+          rawText: `Manual: bought ${shares} shares of ${ticker} @ ${purchasePrice.toFixed(2)} EGP`,
+        }
+
+        // Seed the price state with purchase price so it displays immediately before live data arrives
+        const existingPrice = state.stockPrices[ticker]
+        const seededPrice   = existingPrice ?? {
+          current: purchasePrice, prev: purchasePrice, open: purchasePrice, change: 0, changePct: 0,
+        }
+
+        set({
+          cashBalance:   parseFloat((state.cashBalance - cost).toFixed(2)),
+          stockHoldings: newHoldings,
+          stockPrices:   { ...state.stockPrices, [ticker]: seededPrice },
+          transactions:  [tx, ...state.transactions],
         })
         return null
       },

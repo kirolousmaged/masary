@@ -1,5 +1,5 @@
 'use client'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { usePortfolioStore } from '@/store/usePortfolioStore'
 import { EGX_STOCKS } from '@/data/stocks'
 import type { GoldKarat } from '@/data/gold'
@@ -7,78 +7,96 @@ import type { GoldKarat } from '@/data/gold'
 const GOLDAPI_KEY = process.env.NEXT_PUBLIC_GOLDAPI_KEY ?? ''
 
 // ── Gold ─────────────────────────────────────────────────────────────────────
-// Source 1: goldapi.io  → XAU/EGP price per troy oz, then convert per karat
-// Source 2: TradingView scanner (FOREXCOM:XAUEGP) as fallback
+// Formula (user-specified):
+//   per_gram_24k = (xauusd / 31.1035) × usdegp
+//   per_gram_21k = per_gram_24k × (21/24)
+//   per_gram_18k = per_gram_24k × (18/24)
+//   gold_pound   = per_gram_21k × 8.5   (Egyptian gold pound = 8.5 g of 21K)
 //
-// Conversion:
-//   price_per_gram_pure = oz_price_egp / 31.1035
-//   21K per gram        = price_per_gram_pure × (21/24)
-//   18K per gram        = price_per_gram_pure × (18/24)
-//   Gold Pound (جنيه)   = 21K per gram × 8.5 g
+// Step 1: XAU/USD from goldapi.io  (fallback: TradingView OANDA:XAUUSD)
+// Step 2: USD/EGP from TradingView  FX:USDEGP  (official bank rate)
 async function fetchGoldPricesEGP(): Promise<Record<GoldKarat, number> | null> {
-  // --- goldapi.io (primary) ---
+  // ── Step 1: get gold price in USD per troy oz ─────────────────────────────
+  let xauusd: number | null = null
+
   if (GOLDAPI_KEY) {
     try {
-      const res = await fetch('https://www.goldapi.io/api/XAU/EGP', {
+      const res = await fetch('https://www.goldapi.io/api/XAU/USD', {
         headers: { 'x-access-token': GOLDAPI_KEY, 'Content-Type': 'application/json' },
         cache: 'no-store',
       })
       if (res.ok) {
         const d = await res.json()
-        // goldapi.io returns per-gram prices directly
-        if (d.price_gram_24k) {
-          return {
-            '24K':  parseFloat(d.price_gram_24k.toFixed(2)),
-            '21K':  parseFloat(d.price_gram_21k.toFixed(2)),
-            '18K':  parseFloat(d.price_gram_18k.toFixed(2)),
-            pound:  parseFloat((d.price_gram_21k * 8.5).toFixed(2)),
-          }
-        }
+        if (typeof d.price === 'number' && d.price > 0) xauusd = d.price
       }
-    } catch { /* fall through to TradingView */ }
+    } catch { /* fall through */ }
   }
 
-  // --- TradingView scanner (fallback) ---
+  if (!xauusd) {
+    try {
+      const res = await fetch('https://scanner.tradingview.com/forex/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbols: { tickers: ['OANDA:XAUUSD', 'FOREXCOM:XAUUSD'] },
+          columns: ['close'],
+        }),
+        cache: 'no-store',
+      })
+      if (res.ok) {
+        const d = await res.json()
+        const p = d?.data?.[0]?.d?.[0]
+        if (typeof p === 'number' && p > 0) xauusd = p
+      }
+    } catch { /* fall through */ }
+  }
+
+  if (!xauusd) return null
+
+  // ── Step 2: get USD/EGP exchange rate ────────────────────────────────────
+  let usdegp: number | null = null
+
   try {
     const res = await fetch('https://scanner.tradingview.com/forex/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        symbols: { tickers: ['FOREXCOM:XAUEGP', 'OANDA:XAUEGP', 'FX:XAUEGP'] },
+        symbols: { tickers: ['FX:USDEGP', 'FOREXCOM:USDEGP', 'OANDA:USDEGP'] },
         columns: ['close'],
       }),
       cache: 'no-store',
     })
-    if (!res.ok) return null
-    const data = await res.json()
-    const ozPriceEGP: number = data?.data?.[0]?.d?.[0]
-    if (!ozPriceEGP || ozPriceEGP <= 0) return null
-
-    const per_gram = ozPriceEGP / 31.1035
-    return {
-      '24K':  parseFloat(per_gram.toFixed(2)),
-      '21K':  parseFloat((per_gram * 21 / 24).toFixed(2)),
-      '18K':  parseFloat((per_gram * 18 / 24).toFixed(2)),
-      pound:  parseFloat((per_gram * 21 / 24 * 8.5).toFixed(2)),
+    if (res.ok) {
+      const d = await res.json()
+      const p = d?.data?.[0]?.d?.[0]
+      if (typeof p === 'number' && p > 0) usdegp = p
     }
-  } catch {
-    return null
+  } catch { /* fall through */ }
+
+  if (!usdegp) return null
+
+  // ── Step 3: apply the user's formula ─────────────────────────────────────
+  const per_gram_24k = (xauusd / 31.1035) * usdegp
+  return {
+    '24K':  parseFloat(per_gram_24k.toFixed(2)),
+    '21K':  parseFloat((per_gram_24k * 21 / 24).toFixed(2)),
+    '18K':  parseFloat((per_gram_24k * 18 / 24).toFixed(2)),
+    pound:  parseFloat((per_gram_24k * 21 / 24 * 8.5).toFixed(2)),
   }
 }
 
 // ── EGX Stocks ───────────────────────────────────────────────────────────────
-// TradingView Egypt scanner — returns real EGP prices, no API key required.
-// CapacitorHttp (capacitor.config.ts) routes this through native Android HTTP.
-async function fetchEGXPrices(): Promise<Record<string, number>> {
+// TradingView Egypt scanner — no API key required, returns real EGP prices.
+// CapacitorHttp (capacitor.config.ts) routes this through native Android HTTP,
+// bypassing WebView CORS restrictions.
+async function fetchEGXPrices(tickers: string[]): Promise<Record<string, number>> {
+  if (tickers.length === 0) return {}
   try {
-    const tickers = EGX_STOCKS.map(s => `EGX:${s.ticker}`)
+    const tvTickers = tickers.map(t => `EGX:${t}`)
     const res = await fetch('https://scanner.tradingview.com/egypt/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        symbols: { tickers },
-        columns: ['close'],
-      }),
+      body: JSON.stringify({ symbols: { tickers: tvTickers }, columns: ['close'] }),
       cache: 'no-store',
     })
     if (!res.ok) return {}
@@ -96,11 +114,16 @@ async function fetchEGXPrices(): Promise<Record<string, number>> {
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
-// NO simulation. Only real prices are written to the store.
-// When market is closed prices stay at the last real close — no fake movement.
+// Only real prices are written to the store — no simulation, no fake movement.
+// A ref holds the latest stockHoldings so we don't restart the interval on
+// every portfolio change.
 export function usePriceSimulator() {
   const tickStock        = usePortfolioStore(s => s.tickStockPrice)
   const updateGoldPrices = usePortfolioStore(s => s.updateGoldPrices)
+  const stockHoldings    = usePortfolioStore(s => s.stockHoldings)
+
+  const holdingsRef = useRef(stockHoldings)
+  useEffect(() => { holdingsRef.current = stockHoldings }, [stockHoldings])
 
   useEffect(() => {
     const loadGold = async () => {
@@ -109,19 +132,23 @@ export function usePriceSimulator() {
     }
 
     const loadStocks = async () => {
-      const prices = await fetchEGXPrices()
+      const presetSet     = new Set(EGX_STOCKS.map(s => s.ticker))
+      const customTickers = holdingsRef.current
+        .map(h => h.ticker)
+        .filter(t => !presetSet.has(t))
+      const allTickers = [...EGX_STOCKS.map(s => s.ticker), ...customTickers]
+
+      const prices = await fetchEGXPrices(allTickers)
       for (const [ticker, price] of Object.entries(prices)) {
         tickStock(ticker, price)
       }
     }
 
-    // Fetch immediately on mount
     loadGold()
     loadStocks()
 
-    // During market hours refresh every 30 s; outside hours every 5 min
+    // Real-time during market hours; slow poll when closed
     const interval = isMarketOpen() ? 30_000 : 5 * 60_000
-
     const goldId   = setInterval(loadGold,   interval)
     const stockId  = setInterval(loadStocks, interval)
 
@@ -138,5 +165,6 @@ export function isMarketOpen(): boolean {
   const cairoH = (utcH + 3) % 24
   const day    = (now.getUTCDay() + (utcH + 3 >= 24 ? 1 : 0)) % 7
   const mins   = cairoH * 60 + now.getUTCMinutes()
+  // EGX: Sunday–Thursday 10:00–14:30 Cairo (UTC+3)
   return day >= 0 && day <= 4 && mins >= 10 * 60 && mins < 14 * 60 + 30
 }
