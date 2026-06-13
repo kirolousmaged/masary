@@ -60,11 +60,20 @@ jobs:
       - name: Copy web assets into Android project
         run: npx cap sync android
 
-      # ── 6. Sign config ───────────────────────────────────────────────────
+      # ── 6. SMS permissions ───────────────────────────────────────────────
+      - name: Add SMS permissions to AndroidManifest
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if ! grep -q "READ_SMS" "$MANIFEST"; then
+            sed -i 's|</manifest>|    <uses-permission android:name="android.permission.READ_SMS"\/>\n    <uses-permission android:name="android.permission.RECEIVE_SMS"\/>\n<\/manifest>|' "$MANIFEST"
+            echo "Added READ_SMS and RECEIVE_SMS permissions"
+          fi
+
+      # ── 7. Sign config ───────────────────────────────────────────────────
       - name: Accept Android SDK licences
         run: yes | sdkmanager --licenses || true
 
-      # ── 7. Gradle build ──────────────────────────────────────────────────
+      # ── 8. Gradle build ──────────────────────────────────────────────────
       - name: Make Gradle wrapper executable
         run: chmod +x android/gradlew
 

@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { isMarketOpen, nextMarketOpen } from './usePriceSimulator'
+import { isMarketOpen } from './usePriceSimulator'
 
 export function useMarketStatus() {
   const [open, setOpen] = useState(false)
@@ -10,7 +10,7 @@ export function useMarketStatus() {
     const update = () => {
       const isOpen = isMarketOpen()
       setOpen(isOpen)
-      setLabel(isOpen ? 'Market Open' : nextMarketOpen())
+      setLabel(isOpen ? 'Market Open' : 'Closed')
     }
     update()
     const id = setInterval(update, 30000)

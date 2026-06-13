@@ -4,18 +4,51 @@ import { usePortfolioStore } from '@/store/usePortfolioStore'
 import { EGX_STOCKS } from '@/data/stocks'
 import type { GoldKarat } from '@/data/gold'
 
+async function fetchGoldPricesEGP(): Promise<Record<GoldKarat, number> | null> {
+  try {
+    const [metalRes, fxRes] = await Promise.all([
+      fetch('https://api.metals.live/v1/spot/gold', { cache: 'no-store' }),
+      fetch('https://open.er-api.com/v6/latest/USD', { cache: 'no-store' }),
+    ])
+    if (!metalRes.ok || !fxRes.ok) return null
+    const [metalData, fxData] = await Promise.all([metalRes.json(), fxRes.json()])
+
+    // metals.live returns [{ gold: 3247 }] or { gold: 3247 }
+    const spotUSD: number = Array.isArray(metalData) ? metalData[0]?.gold : metalData?.gold
+    const egpRate: number = fxData?.rates?.EGP
+
+    if (!spotUSD || !egpRate) return null
+
+    const per24k = (spotUSD / 31.1035) * egpRate
+    return {
+      '24K': parseFloat(per24k.toFixed(2)),
+      '21K': parseFloat((per24k * 21 / 24).toFixed(2)),
+      '18K': parseFloat((per24k * 18 / 24).toFixed(2)),
+      pound: parseFloat((per24k * 21 / 24 * 8.5).toFixed(2)),
+    }
+  } catch {
+    return null
+  }
+}
+
 export function usePriceSimulator() {
-  const tickStock = usePortfolioStore(s => s.tickStockPrice)
-  const tickGold  = usePortfolioStore(s => s.tickGoldPrice)
-  const stockPrices = usePortfolioStore(s => s.stockPrices)
-  const goldPrices  = usePortfolioStore(s => s.goldPrices)
+  const tickStock        = usePortfolioStore(s => s.tickStockPrice)
+  const updateGoldPrices = usePortfolioStore(s => s.updateGoldPrices)
+  const stockPrices      = usePortfolioStore(s => s.stockPrices)
 
   const stockPricesRef = useRef(stockPrices)
-  const goldPricesRef  = useRef(goldPrices)
   stockPricesRef.current = stockPrices
-  goldPricesRef.current  = goldPrices
 
   useEffect(() => {
+    // Real gold prices — fetch immediately then every 60 s
+    const loadGold = async () => {
+      const prices = await fetchGoldPricesEGP()
+      if (prices) updateGoldPrices(prices)
+    }
+    loadGold()
+    const goldInterval = setInterval(loadGold, 60000)
+
+    // EGX simulation (1.2 s ticks, weekdays 10:00–14:30 Cairo)
     const stockInterval = setInterval(() => {
       if (!isMarketOpen()) return
       const stock = EGX_STOCKS[Math.floor(Math.random() * EGX_STOCKS.length)]
@@ -25,20 +58,11 @@ export function usePriceSimulator() {
       tickStock(stock.ticker, parseFloat(next.toFixed(2)))
     }, 1200)
 
-    const goldInterval = setInterval(() => {
-      const karats: GoldKarat[] = ['24K', '21K', '18K', 'pound']
-      karats.forEach(k => {
-        const cur = goldPricesRef.current[k]
-        const delta = cur * 0.0006 * (Math.random() * 2 - 1)
-        tickGold(k, parseFloat((cur + delta).toFixed(2)))
-      })
-    }, 60000)
-
     return () => {
-      clearInterval(stockInterval)
       clearInterval(goldInterval)
+      clearInterval(stockInterval)
     }
-  }, [tickStock, tickGold])
+  }, [tickStock, updateGoldPrices])
 }
 
 export function isMarketOpen(): boolean {
@@ -51,16 +75,5 @@ export function isMarketOpen(): boolean {
 
   const isWeekday = day >= 0 && day <= 4
   const totalMins = cairoHour * 60 + utcMin
-  const open  = 10 * 60
-  const close = 14 * 60 + 30
-  return isWeekday && totalMins >= open && totalMins < close
-}
-
-export function nextMarketOpen(): string {
-  const now = new Date()
-  const cairoOffset = 3
-  const day = (now.getUTCDay() + (now.getUTCHours() + cairoOffset >= 24 ? 1 : 0)) % 7
-  const daysUntilSun = day === 5 ? 2 : day === 6 ? 1 : 0
-  if (daysUntilSun > 0) return `Opens ${daysUntilSun === 1 ? 'Tomorrow' : 'Sunday'} 10:00 AM`
-  return 'Opens Tomorrow 10:00 AM'
+  return isWeekday && totalMins >= 10 * 60 && totalMins < 14 * 60 + 30
 }
