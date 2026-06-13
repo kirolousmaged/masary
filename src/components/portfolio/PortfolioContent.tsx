@@ -1,6 +1,6 @@
 'use client'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { PriceFlashBadge } from '@/components/ui/PriceFlashBadge'
 import { usePortfolioStore } from '@/store/usePortfolioStore'
 import { GOLD_KARATS, getGoldKaratInfo, type GoldKarat } from '@/data/gold'
@@ -29,16 +29,43 @@ export function PortfolioContent() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  const cashBalance   = usePortfolioStore(s => s.cashBalance)
-  const goldHoldings  = usePortfolioStore(s => s.goldHoldings)
-  const stockHoldings = usePortfolioStore(s => s.stockHoldings)
-  const goldPrices    = usePortfolioStore(s => s.goldPrices)
-  const stockPrices   = usePortfolioStore(s => s.stockPrices)
-  const transactions  = usePortfolioStore(s => s.transactions)
-  const buyStock      = usePortfolioStore(s => s.buyStock)
-  const sellStock     = usePortfolioStore(s => s.sellStock)
-  const buyGold       = usePortfolioStore(s => s.buyGold)
-  const sellGold      = usePortfolioStore(s => s.sellGold)
+  // Cash manual entry sheet
+  const [cashSheet, setCashSheet] = useState<'deposit' | 'withdraw' | null>(null)
+  const [cashAmt, setCashAmt] = useState('')
+  const [cashNote, setCashNote] = useState('')
+  const [cashErr, setCashErr] = useState('')
+  const [cashOk, setCashOk] = useState('')
+
+  const cashBalance      = usePortfolioStore(s => s.cashBalance)
+  const goldHoldings     = usePortfolioStore(s => s.goldHoldings)
+  const stockHoldings    = usePortfolioStore(s => s.stockHoldings)
+  const goldPrices       = usePortfolioStore(s => s.goldPrices)
+  const stockPrices      = usePortfolioStore(s => s.stockPrices)
+  const transactions     = usePortfolioStore(s => s.transactions)
+  const buyStock         = usePortfolioStore(s => s.buyStock)
+  const sellStock        = usePortfolioStore(s => s.sellStock)
+  const buyGold          = usePortfolioStore(s => s.buyGold)
+  const sellGold         = usePortfolioStore(s => s.sellGold)
+  const manualCashEntry  = usePortfolioStore(s => s.manualCashEntry)
+
+  const openCashSheet = (type: 'deposit' | 'withdraw') => {
+    setCashSheet(type)
+    setCashAmt('')
+    setCashNote('')
+    setCashErr('')
+    setCashOk('')
+  }
+  const closeCashSheet = () => setCashSheet(null)
+
+  const confirmCash = () => {
+    if (!cashSheet) return
+    const amt = parseFloat(cashAmt)
+    const err = manualCashEntry(cashSheet === 'deposit' ? 'credit' : 'debit', amt, cashNote)
+    if (err) { setCashErr(err) } else {
+      setCashOk(cashSheet === 'deposit' ? 'Deposit recorded' : 'Withdrawal recorded')
+      setTimeout(closeCashSheet, 900)
+    }
+  }
 
   const totalGold   = goldHoldings.reduce((s, h) => s + h.amount * goldPrices[h.karat], 0)
   const totalStocks = stockHoldings.reduce((s, h) => s + h.shares * (stockPrices[h.ticker]?.current ?? 0), 0)
@@ -248,6 +275,23 @@ export function PortfolioContent() {
       {(tab === 'all' || tab === 'cash') && (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: 0.1 }}>
           <SectionHeader title="Cash & Activity" value={cashBalance} color="emerald" />
+
+          {/* Quick cash actions */}
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={() => openCashSheet('deposit')}
+              className="flex-1 py-2 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold active:scale-[0.96] transition-transform"
+            >
+              + Deposit
+            </button>
+            <button
+              onClick={() => openCashSheet('withdraw')}
+              className="flex-1 py-2 text-xs rounded-xl bg-red-500/10 text-red-400 border border-red-500/20 font-semibold active:scale-[0.96] transition-transform"
+            >
+              − Withdraw
+            </button>
+          </div>
+
           {transactions.length === 0 ? (
             <div className="glass-card p-6 text-center mt-2">
               <p className="text-sm text-[#8B949E]">No transactions yet</p>
@@ -349,6 +393,70 @@ export function PortfolioContent() {
                 {sheet.mode === 'buy' ? 'Confirm Purchase' : 'Confirm Sale'}
               </button>
               <button onClick={closeSheet} className="w-full py-3 mt-2 text-sm text-[#8B949E]">Cancel</button>
+            </motion.div>
+          </>
+        )}
+
+        {/* ── Cash Entry Sheet ─────────────────────── */}
+        {cashSheet && (
+          <>
+            <motion.div
+              className="fixed inset-0 z-40 bg-black/60"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={closeCashSheet}
+            />
+            <motion.div
+              className="fixed bottom-0 inset-x-0 z-50 bg-[#161B22] rounded-t-2xl p-6 pb-safe"
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+            >
+              <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mb-5" />
+
+              <p className="text-base font-bold text-white mb-1">
+                {cashSheet === 'deposit' ? 'Deposit Cash' : 'Withdraw Cash'}
+              </p>
+              <p className="text-xs text-[#8B949E] mb-5">
+                Balance: <span className="text-emerald-400 font-mono">{fmt(cashBalance)} EGP</span>
+              </p>
+
+              <label className="block text-xs text-[#8B949E] mb-1.5">Amount (EGP)</label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={cashAmt}
+                onChange={e => { setCashAmt(e.target.value); setCashErr('') }}
+                placeholder="0"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-base font-mono focus:outline-none focus:border-emerald-500/60 mb-3"
+                autoFocus
+              />
+
+              <label className="block text-xs text-[#8B949E] mb-1.5">Note (optional)</label>
+              <input
+                type="text"
+                value={cashNote}
+                onChange={e => setCashNote(e.target.value)}
+                placeholder={cashSheet === 'deposit' ? 'e.g. Salary, ATM deposit…' : 'e.g. Rent, groceries…'}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-emerald-500/60 mb-4"
+              />
+
+              {cashErr && <p className="text-xs text-red-400 mb-3">{cashErr}</p>}
+              {cashOk  && <p className="text-xs text-emerald-400 mb-3">{cashOk}</p>}
+
+              <button
+                onClick={confirmCash}
+                disabled={!(parseFloat(cashAmt) > 0)}
+                className={`w-full py-3.5 rounded-xl text-sm font-bold transition-all active:scale-[0.97]
+                  ${parseFloat(cashAmt) > 0
+                    ? cashSheet === 'deposit'
+                      ? 'bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+                      : 'bg-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.3)]'
+                    : 'bg-white/5 text-[#484F58] cursor-not-allowed'
+                  }`}
+              >
+                {cashSheet === 'deposit' ? 'Confirm Deposit' : 'Confirm Withdrawal'}
+              </button>
+              <button onClick={closeCashSheet} className="w-full py-3 mt-2 text-sm text-[#8B949E]">Cancel</button>
             </motion.div>
           </>
         )}

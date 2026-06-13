@@ -46,6 +46,8 @@ interface PortfolioStore {
   addTransaction: (v: SMSTransaction) => void
   adjustCashForTransaction: (type: 'credit' | 'debit', amount: number) => void
 
+  manualCashEntry: (type: 'credit' | 'debit', amount: number, note: string) => string | null
+
   buyStock: (ticker: string, shares: number) => string | null
   sellStock: (ticker: string, shares: number) => string | null
   buyGold: (karat: GoldKarat, amount: number) => string | null
@@ -122,6 +124,28 @@ export const usePortfolioStore = create<PortfolioStore>()(
               ? state.cashBalance + amount
               : Math.max(0, state.cashBalance - amount),
         })),
+
+      manualCashEntry: (type, amount, note) => {
+        const state = get()
+        if (amount <= 0) return 'Amount must be greater than 0'
+        if (type === 'debit' && amount > state.cashBalance) return 'Insufficient cash balance'
+        const tx: SMSTransaction = {
+          id: `tx-${Date.now()}`,
+          type,
+          amount: parseFloat(amount.toFixed(2)),
+          merchant: note.trim() || (type === 'credit' ? 'Cash Deposit' : 'Cash Withdrawal'),
+          bank: 'Manual',
+          date: new Date().toISOString(),
+          rawText: `Manual entry: ${type === 'credit' ? '+' : '-'}${amount} EGP`,
+        }
+        set({
+          cashBalance: parseFloat(
+            (type === 'credit' ? state.cashBalance + amount : state.cashBalance - amount).toFixed(2)
+          ),
+          transactions: [tx, ...state.transactions],
+        })
+        return null
+      },
 
       buyStock: (ticker, shares) => {
         const state = get()
