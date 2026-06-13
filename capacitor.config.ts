@@ -11,6 +11,12 @@ const config: CapacitorConfig = {
   server: {
     androidScheme: 'https',
   },
+  plugins: {
+    // Route all fetch() through native Android HTTP — bypasses WebView CORS restrictions
+    CapacitorHttp: {
+      enabled: true,
+    },
+  },
 }
 
 export default config
