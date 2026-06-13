@@ -1,69 +1,94 @@
 'use client'
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { usePortfolioStore } from '@/store/usePortfolioStore'
 import { EGX_STOCKS } from '@/data/stocks'
 import type { GoldKarat } from '@/data/gold'
 
-const GOLDAPI_KEY    = process.env.NEXT_PUBLIC_GOLDAPI_KEY    ?? ''
-const TWELVEDATA_KEY = process.env.NEXT_PUBLIC_TWELVEDATA_KEY ?? ''
+const GOLDAPI_KEY = process.env.NEXT_PUBLIC_GOLDAPI_KEY ?? ''
 
-// ── Gold — goldapi.io (EGP per gram direct) ───────────────────────────────────
+// ── Gold ─────────────────────────────────────────────────────────────────────
+// Source 1: goldapi.io  → XAU/EGP price per troy oz, then convert per karat
+// Source 2: TradingView scanner (FOREXCOM:XAUEGP) as fallback
+//
+// Conversion:
+//   price_per_gram_pure = oz_price_egp / 31.1035
+//   21K per gram        = price_per_gram_pure × (21/24)
+//   18K per gram        = price_per_gram_pure × (18/24)
+//   Gold Pound (جنيه)   = 21K per gram × 8.5 g
 async function fetchGoldPricesEGP(): Promise<Record<GoldKarat, number> | null> {
-  if (!GOLDAPI_KEY) return null
+  // --- goldapi.io (primary) ---
+  if (GOLDAPI_KEY) {
+    try {
+      const res = await fetch('https://www.goldapi.io/api/XAU/EGP', {
+        headers: { 'x-access-token': GOLDAPI_KEY, 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      })
+      if (res.ok) {
+        const d = await res.json()
+        // goldapi.io returns per-gram prices directly
+        if (d.price_gram_24k) {
+          return {
+            '24K':  parseFloat(d.price_gram_24k.toFixed(2)),
+            '21K':  parseFloat(d.price_gram_21k.toFixed(2)),
+            '18K':  parseFloat(d.price_gram_18k.toFixed(2)),
+            pound:  parseFloat((d.price_gram_21k * 8.5).toFixed(2)),
+          }
+        }
+      }
+    } catch { /* fall through to TradingView */ }
+  }
+
+  // --- TradingView scanner (fallback) ---
   try {
-    const res = await fetch('https://www.goldapi.io/api/XAU/EGP', {
-      headers: { 'x-access-token': GOLDAPI_KEY, 'Content-Type': 'application/json' },
+    const res = await fetch('https://scanner.tradingview.com/forex/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbols: { tickers: ['FOREXCOM:XAUEGP', 'OANDA:XAUEGP', 'FX:XAUEGP'] },
+        columns: ['close'],
+      }),
       cache: 'no-store',
     })
     if (!res.ok) return null
-    const d = await res.json()
-    if (!d.price_gram_24k) return null
+    const data = await res.json()
+    const ozPriceEGP: number = data?.data?.[0]?.d?.[0]
+    if (!ozPriceEGP || ozPriceEGP <= 0) return null
+
+    const per_gram = ozPriceEGP / 31.1035
     return {
-      '24K':  parseFloat(d.price_gram_24k.toFixed(2)),
-      '21K':  parseFloat(d.price_gram_21k.toFixed(2)),
-      '18K':  parseFloat(d.price_gram_18k.toFixed(2)),
-      pound:  parseFloat((d.price_gram_21k * 8.5).toFixed(2)),
+      '24K':  parseFloat(per_gram.toFixed(2)),
+      '21K':  parseFloat((per_gram * 21 / 24).toFixed(2)),
+      '18K':  parseFloat((per_gram * 18 / 24).toFixed(2)),
+      pound:  parseFloat((per_gram * 21 / 24 * 8.5).toFixed(2)),
     }
   } catch {
     return null
   }
 }
 
-// ── EGX stocks — Twelve Data (/price batch, exchange=EGX, currency=EGP) ───────
-// Free tier: 800 credits/day, 8/min. 15 symbols = 15 credits per fetch.
-// We fetch every 5 min (3 fetches/hr × 15 = 45 credits/hr) — well within limits.
-// CapacitorHttp.enabled in capacitor.config.ts bypasses WebView CORS on Android.
+// ── EGX Stocks ───────────────────────────────────────────────────────────────
+// TradingView Egypt scanner — returns real EGP prices, no API key required.
+// CapacitorHttp (capacitor.config.ts) routes this through native Android HTTP.
 async function fetchEGXPrices(): Promise<Record<string, number>> {
-  if (!TWELVEDATA_KEY) return {}
   try {
-    const symbols = EGX_STOCKS.map(s => s.ticker).join(',')
-    const url =
-      `https://api.twelvedata.com/price` +
-      `?symbol=${symbols}` +
-      `&exchange=EGX` +
-      `&apikey=${TWELVEDATA_KEY}`
-
-    const res = await fetch(url, { cache: 'no-store' })
+    const tickers = EGX_STOCKS.map(s => `EGX:${s.ticker}`)
+    const res = await fetch('https://scanner.tradingview.com/egypt/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbols: { tickers },
+        columns: ['close'],
+      }),
+      cache: 'no-store',
+    })
     if (!res.ok) return {}
     const data = await res.json()
-
     const prices: Record<string, number> = {}
-
-    // Single-symbol response: { "price": "741.25" }
-    // Multi-symbol response:  { "ORAS": { "price": "741.25" }, "COMI": { "price": "82.50" }, ... }
-    if (typeof data.price === 'string') {
-      // shouldn't happen (we always send multiple), but handle it
-      const p = parseFloat(data.price)
-      if (!isNaN(p) && p > 0) prices[EGX_STOCKS[0].ticker] = p
-    } else {
-      for (const [ticker, val] of Object.entries(data)) {
-        const v = val as { price?: string; code?: number }
-        if (v.code) continue           // error entry (ticker not found)
-        const p = parseFloat(v.price ?? '')
-        if (!isNaN(p) && p > 0) prices[ticker] = p
-      }
+    for (const row of (data?.data ?? [])) {
+      const ticker = (row.s as string).replace('EGX:', '')
+      const price  = row.d?.[0]
+      if (typeof price === 'number' && price > 0) prices[ticker] = price
     }
-
     return prices
   } catch {
     return {}
@@ -71,63 +96,38 @@ async function fetchEGXPrices(): Promise<Record<string, number>> {
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
+// NO simulation. Only real prices are written to the store.
+// When market is closed prices stay at the last real close — no fake movement.
 export function usePriceSimulator() {
   const tickStock        = usePortfolioStore(s => s.tickStockPrice)
   const updateGoldPrices = usePortfolioStore(s => s.updateGoldPrices)
-  const goldPrices       = usePortfolioStore(s => s.goldPrices)
-  const stockPrices      = usePortfolioStore(s => s.stockPrices)
-
-  const goldRef  = useRef(goldPrices)
-  const stockRef = useRef(stockPrices)
-  goldRef.current  = goldPrices
-  stockRef.current = stockPrices
 
   useEffect(() => {
-    // ── Real gold: immediately + every 30 s ───────────────────────────────
     const loadGold = async () => {
       const prices = await fetchGoldPricesEGP()
       if (prices) updateGoldPrices(prices)
     }
-    loadGold()
-    const goldId = setInterval(loadGold, 30_000)
 
-    // ── Real EGX: immediately + every 5 min (respects free-tier limits) ──
     const loadStocks = async () => {
       const prices = await fetchEGXPrices()
       for (const [ticker, price] of Object.entries(prices)) {
         tickStock(ticker, price)
       }
     }
+
+    // Fetch immediately on mount
+    loadGold()
     loadStocks()
-    const stockId = setInterval(loadStocks, 5 * 60_000)
 
-    // ── 2-second micro-tick: visual live movement between real fetches ─────
-    const microId = setInterval(() => {
-      // Gold ±0.03% per tick, all karats derived from current 24K
-      const g24 = goldRef.current['24K']
-      if (g24 > 0) {
-        const n    = g24 * 0.0003 * (Math.random() * 2 - 1)
-        const new24 = Math.max(g24 * 0.8, g24 + n)
-        updateGoldPrices({
-          '24K':  parseFloat(new24.toFixed(2)),
-          '21K':  parseFloat((new24 * 21 / 24).toFixed(2)),
-          '18K':  parseFloat((new24 * 18 / 24).toFixed(2)),
-          pound:  parseFloat((new24 * 21 / 24 * 8.5).toFixed(2)),
-        })
-      }
+    // During market hours refresh every 30 s; outside hours every 5 min
+    const interval = isMarketOpen() ? 30_000 : 5 * 60_000
 
-      // Stocks: one random ticker per tick, ±volatility scaled by market status
-      const scale = isMarketOpen() ? 1 : 0.05
-      const stock = EGX_STOCKS[Math.floor(Math.random() * EGX_STOCKS.length)]
-      const cur   = stockRef.current[stock.ticker]?.current ?? stock.basePrice
-      const delta = cur * stock.volatility * scale * (Math.random() * 2 - 1)
-      tickStock(stock.ticker, parseFloat(Math.max(cur * 0.5, cur + delta).toFixed(2)))
-    }, 2_000)
+    const goldId   = setInterval(loadGold,   interval)
+    const stockId  = setInterval(loadStocks, interval)
 
     return () => {
       clearInterval(goldId)
       clearInterval(stockId)
-      clearInterval(microId)
     }
   }, [tickStock, updateGoldPrices])
 }

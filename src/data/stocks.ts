@@ -11,7 +11,7 @@ export interface EGXStock {
 }
 
 // Base prices are approximate mid-2025 EGX values in EGP.
-// They are replaced within seconds by live Twelve Data prices at runtime.
+// They are replaced within seconds by live TradingView scanner prices at runtime.
 export const EGX_STOCKS: EGXStock[] = [
   { ticker: 'COMI',  name: 'Commercial International Bank',   nameAr: 'البنك التجاري الدولي',            sector: 'Banking',      basePrice: 82.00,  pe: 8.2,  dividendYield: 4.5,  marketCapM: 163000, volatility: 0.008 },
   { ticker: 'FWRY',  name: 'Fawry for Banking Technology',    nameAr: 'فوري للتكنولوجيا المالية',         sector: 'Fintech',      basePrice: 12.50,  pe: 22.5, dividendYield: 0,    marketCapM: 10500,  volatility: 0.018 },
