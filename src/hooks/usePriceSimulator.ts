@@ -4,20 +4,14 @@ import { usePortfolioStore } from '@/store/usePortfolioStore'
 import { EGX_STOCKS } from '@/data/stocks'
 import type { GoldKarat } from '@/data/gold'
 
-// Baked in at build time from NEXT_PUBLIC_GOLDAPI_KEY GitHub Secret
 const GOLDAPI_KEY = process.env.NEXT_PUBLIC_GOLDAPI_KEY ?? ''
 
-// ── Gold (goldapi.io) ─────────────────────────────────────────────────────────
-// Returns per-gram EGP prices for each karat directly — no conversion needed.
-// Egyptian Gold Pound = 8.5 g of 21K gold.
+// ── Gold (goldapi.io → EGP per gram for each karat) ──────────────────────────
 async function fetchGoldPricesEGP(): Promise<Record<GoldKarat, number> | null> {
   if (!GOLDAPI_KEY) return null
   try {
     const res = await fetch('https://www.goldapi.io/api/XAU/EGP', {
-      headers: {
-        'x-access-token': GOLDAPI_KEY,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'x-access-token': GOLDAPI_KEY, 'Content-Type': 'application/json' },
       cache: 'no-store',
     })
     if (!res.ok) return null
@@ -34,30 +28,39 @@ async function fetchGoldPricesEGP(): Promise<Record<GoldKarat, number> | null> {
   }
 }
 
-// ── EGX stocks (Yahoo Finance — .CA suffix = Cairo exchange) ──────────────────
-// CapacitorHttp (enabled in capacitor.config.ts) routes this through native
-// Android HTTP, bypassing the WebView CORS restriction.
-async function fetchEGXPrices(): Promise<Record<string, number>> {
+// ── EGX stocks (Yahoo Finance v8 chart API) ───────────────────────────────────
+// The v7 quote batch endpoint requires cookie-auth since 2024; the v8 chart
+// endpoint is fetched per-ticker and remains publicly accessible.
+// CapacitorHttp (enabled in capacitor.config.ts) routes these calls through
+// native Android HTTP — no WebView CORS restriction applies.
+async function fetchOneStockPrice(ticker: string): Promise<number | null> {
   try {
-    const symbols = EGX_STOCKS.map(s => `${s.ticker}.CA`).join(',')
     const res = await fetch(
-      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,symbol`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}.CA?interval=1d&range=1d`,
       { cache: 'no-store' }
     )
-    if (!res.ok) return {}
+    if (!res.ok) return null
     const data = await res.json()
-    const results: Array<{ symbol: string; regularMarketPrice?: number }> =
-      data?.quoteResponse?.result ?? []
-    const prices: Record<string, number> = {}
-    for (const r of results) {
-      if (r.regularMarketPrice && r.symbol) {
-        prices[r.symbol.replace('.CA', '')] = r.regularMarketPrice
-      }
-    }
-    return prices
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice
+    return typeof price === 'number' && price > 0 ? price : null
   } catch {
-    return {}
+    return null
   }
+}
+
+async function fetchEGXPrices(): Promise<Record<string, number>> {
+  const settled = await Promise.allSettled(
+    EGX_STOCKS.map(s =>
+      fetchOneStockPrice(s.ticker).then(price => ({ ticker: s.ticker, price }))
+    )
+  )
+  const prices: Record<string, number> = {}
+  for (const r of settled) {
+    if (r.status === 'fulfilled' && r.value.price !== null) {
+      prices[r.value.ticker] = r.value.price
+    }
+  }
+  return prices
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -73,7 +76,7 @@ export function usePriceSimulator() {
   stockRef.current = stockPrices
 
   useEffect(() => {
-    // ── Real gold — fetch immediately then every 30 s ──────────────────────
+    // Real gold — immediately then every 30 s
     const loadGold = async () => {
       const prices = await fetchGoldPricesEGP()
       if (prices) updateGoldPrices(prices)
@@ -81,7 +84,7 @@ export function usePriceSimulator() {
     loadGold()
     const goldFetchId = setInterval(loadGold, 30_000)
 
-    // ── Real EGX — fetch immediately then every 30 s ───────────────────────
+    // Real EGX — immediately then every 30 s
     const loadStocks = async () => {
       const prices = await fetchEGXPrices()
       for (const [ticker, price] of Object.entries(prices)) {
@@ -91,25 +94,23 @@ export function usePriceSimulator() {
     loadStocks()
     const stockFetchId = setInterval(loadStocks, 30_000)
 
-    // ── 2-second micro-tick for visual live movement ───────────────────────
-    // Applies tiny noise between real fetches so numbers visibly animate.
-    // Outside market hours, stock noise is dampened ×0.05.
+    // 2-second micro-tick — visual live movement between real fetches
     const microId = setInterval(() => {
-      // Gold: ±0.03% per tick, all karats derived from current 24K
+      // Gold ±0.03% per tick
       const g24 = goldRef.current['24K']
       if (g24 > 0) {
-        const noise  = g24 * 0.0003 * (Math.random() * 2 - 1)
-        const new24k = Math.max(g24 * 0.8, g24 + noise)
+        const n    = g24 * 0.0003 * (Math.random() * 2 - 1)
+        const new24 = Math.max(g24 * 0.8, g24 + n)
         updateGoldPrices({
-          '24K':  parseFloat(new24k.toFixed(2)),
-          '21K':  parseFloat((new24k * 21 / 24).toFixed(2)),
-          '18K':  parseFloat((new24k * 18 / 24).toFixed(2)),
-          pound:  parseFloat((new24k * 21 / 24 * 8.5).toFixed(2)),
+          '24K':  parseFloat(new24.toFixed(2)),
+          '21K':  parseFloat((new24 * 21 / 24).toFixed(2)),
+          '18K':  parseFloat((new24 * 18 / 24).toFixed(2)),
+          pound:  parseFloat((new24 * 21 / 24 * 8.5).toFixed(2)),
         })
       }
 
-      // Stocks: one random ticker per tick
-      const scale = isMarketOpen() ? 1 : 0.05
+      // Stocks — one random ticker per tick
+      const scale  = isMarketOpen() ? 1 : 0.05
       const stock  = EGX_STOCKS[Math.floor(Math.random() * EGX_STOCKS.length)]
       const cur    = stockRef.current[stock.ticker]?.current ?? stock.basePrice
       const delta  = cur * stock.volatility * scale * (Math.random() * 2 - 1)
@@ -125,11 +126,10 @@ export function usePriceSimulator() {
 }
 
 export function isMarketOpen(): boolean {
-  const now       = new Date()
-  const utcH      = now.getUTCHours()
-  const utcM      = now.getUTCMinutes()
-  const cairoH    = (utcH + 3) % 24
-  const day       = (now.getUTCDay() + (utcH + 3 >= 24 ? 1 : 0)) % 7
-  const totalMins = cairoH * 60 + utcM
-  return day >= 0 && day <= 4 && totalMins >= 10 * 60 && totalMins < 14 * 60 + 30
+  const now    = new Date()
+  const utcH   = now.getUTCHours()
+  const cairoH = (utcH + 3) % 24
+  const day    = (now.getUTCDay() + (utcH + 3 >= 24 ? 1 : 0)) % 7
+  const mins   = cairoH * 60 + now.getUTCMinutes()
+  return day >= 0 && day <= 4 && mins >= 10 * 60 && mins < 14 * 60 + 30
 }
