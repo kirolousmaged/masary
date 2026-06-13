@@ -1,0 +1,113 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Masary APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Source ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Runtimes ──────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ── 3. Android SDK ───────────────────────────────────────────────────
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required Android SDK packages
+        run: |
+          sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "extras;android;m2repository" \
+            "extras;google;m2repository"
+
+      # ── 4. Web build ─────────────────────────────────────────────────────
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Next.js static export
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
+      # ── 5. Capacitor ─────────────────────────────────────────────────────
+      - name: Add Capacitor Android platform
+        run: npx cap add android
+
+      - name: Copy web assets into Android project
+        run: npx cap sync android
+
+      # ── 6. Sign config ───────────────────────────────────────────────────
+      - name: Accept Android SDK licences
+        run: yes | sdkmanager --licenses || true
+
+      # ── 7. Gradle build ──────────────────────────────────────────────────
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          JAVA_HOME:    ${{ env.JAVA_HOME }}
+
+      # ── 8. Locate output ─────────────────────────────────────────────────
+      - name: Locate APK
+        id: find_apk
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -1)
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "Found APK: $APK_PATH"
+          ls -lh "$APK_PATH"
+
+      # ── 9. Upload artifact (always available) ────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: masary-debug-apk
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 30
+
+      # ── 10. GitHub Release with APK attached ─────────────────────────────
+      - name: Create GitHub Release & attach APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.${{ github.run_number }}.0
+          name: "مصرى Masary v0.${{ github.run_number }}.0"
+          body: |
+            ## مصرى — Masary APK
+
+            ### Install on your Android phone
+            1. Download **`masary-debug.apk`** from the Assets below
+            2. Enable **Settings → Security → Install unknown apps** on your phone
+            3. Tap the downloaded file → **Install**
+
+            > Built from commit `${{ github.sha }}`
+          files: ${{ steps.find_apk.outputs.apk_path }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
